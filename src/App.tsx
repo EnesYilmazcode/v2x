@@ -34,6 +34,8 @@ function LocationUpdater({ location }: { location: Location | null }) {
   return null;
 }
 
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL;
+
 function App() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isTracking, setIsTracking] = useState(false);
@@ -43,27 +45,57 @@ function App() {
   const trackingInterval = useRef<number>();
 
   useEffect(() => {
-    const newSocket = io('https://your-backend-url.com'); // Replace with your actual backend URL
+    if (!SOCKET_URL) {
+      addLog('Socket URL not configured', true);
+      return;
+    }
+
+    const newSocket = io(SOCKET_URL, {
+      reconnection: true,
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+    });
+
     setSocket(newSocket);
 
+    newSocket.on('connect', () => {
+      addLog('Connected to server');
+    });
+
+    newSocket.on('disconnect', () => {
+      addLog('Disconnected from server', true);
+    });
+
+    newSocket.on('connect_error', (error) => {
+      addLog(`Connection error: ${error.message}`, true);
+    });
+
     newSocket.on('updateUsers', (updatedUsers: User[]) => {
+      console.log('Received users update:', updatedUsers);
       setUsers(updatedUsers);
+      addLog(`Users updated: ${updatedUsers.length} users online`);
     });
 
     return () => {
-      newSocket.close();
+      if (newSocket) {
+        newSocket.disconnect();
+      }
     };
   }, []);
 
   const addLog = (message: string, isError = false) => {
-    setLogs(prev => [...prev, `${isError ? '❌ ' : '✅ '}${message}`]);
+    setLogs(prev => [...prev, `${isError ? '❌ ' : '✅ '}${new Date().toLocaleTimeString()} - ${message}`]);
   };
 
   const updateLocation = (position: GeolocationPosition) => {
     const { latitude, longitude } = position.coords;
     setCurrentLocation({ latitude, longitude });
-    socket?.emit('updateLocation', { latitude, longitude });
-    addLog(`Location updated: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+    if (socket?.connected) {
+      socket.emit('updateLocation', { latitude, longitude });
+      addLog(`Location updated: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+    } else {
+      addLog('Cannot update location: Not connected to server', true);
+    }
   };
 
   const handleLocationError = (error: GeolocationPositionError) => {
@@ -88,10 +120,17 @@ function App() {
       return;
     }
 
+    if (!socket?.connected) {
+      addLog('Cannot start tracking: Not connected to server', true);
+      return;
+    }
+
     setIsTracking(true);
+    navigator.geolocation.getCurrentPosition(updateLocation, handleLocationError);
     trackingInterval.current = window.setInterval(() => {
       navigator.geolocation.getCurrentPosition(updateLocation, handleLocationError);
     }, 5000);
+    addLog('Location tracking started');
   };
 
   const stopTracking = () => {
@@ -113,9 +152,24 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-100 p-4">
       <div className="max-w-6xl mx-auto space-y-4">
-        <header className="flex items-center space-x-2 text-2xl font-bold text-gray-800">
-          <Navigation className="w-8 h-8" />
-          <h1>Location Tracker</h1>
+        <header className="flex items-center justify-between bg-white rounded-lg shadow-md p-4">
+          <div className="flex items-center space-x-2 text-2xl font-bold text-gray-800">
+            <Navigation className="w-8 h-8" />
+            <h1>Location Tracker</h1>
+          </div>
+          <div className="text-sm text-gray-600">
+            {socket?.connected ? (
+              <span className="flex items-center text-green-600">
+                <span className="w-2 h-2 bg-green-600 rounded-full mr-2"></span>
+                Connected
+              </span>
+            ) : (
+              <span className="flex items-center text-red-600">
+                <span className="w-2 h-2 bg-red-600 rounded-full mr-2"></span>
+                Disconnected
+              </span>
+            )}
+          </div>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -151,6 +205,7 @@ function App() {
                 <button
                   onClick={startTracking}
                   className="flex items-center space-x-2 bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 transition-colors"
+                  disabled={!socket?.connected}
                 >
                   <Play className="w-4 h-4" />
                   <span>Start Tracking</span>
@@ -179,6 +234,7 @@ function App() {
                 <button
                   onClick={copyLocation}
                   className="flex items-center space-x-2 bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors"
+                  disabled={!currentLocation}
                 >
                   <Copy className="w-4 h-4" />
                   <span>Copy Location</span>
@@ -187,11 +243,14 @@ function App() {
             </div>
 
             <div className="bg-white rounded-lg shadow-md p-4">
-              <h2 className="text-lg font-semibold mb-2">Connected Users</h2>
+              <h2 className="text-lg font-semibold mb-2">Connected Users ({users.length})</h2>
               <div className="space-y-2">
                 {users.map(user => (
-                  <div key={user.id} className="text-sm">
-                    User {user.id.slice(0, 5)}: Lat {user.latitude.toFixed(4)}, Lon {user.longitude.toFixed(4)}
+                  <div key={user.id} className="text-sm p-2 bg-gray-50 rounded">
+                    <div className="font-medium">User {user.id.slice(0, 5)}</div>
+                    <div className="text-gray-600">
+                      Lat: {user.latitude.toFixed(4)}, Lon: {user.longitude.toFixed(4)}
+                    </div>
                   </div>
                 ))}
               </div>
